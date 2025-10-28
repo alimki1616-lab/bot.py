@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: bitcoin-bot
+    env: python
+    region: frankfurt
+    plan: starter
+    buildCommand: pip install -r bot_requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHANNEL_USERNAME
+        value: "@BtcRadars"
+      - key: CHECK_INTERVAL
+        value: "30"
