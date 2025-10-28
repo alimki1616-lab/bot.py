@@ -1,4 +1,3 @@
-python
 import os
 import asyncio
 import logging
@@ -98,4 +97,3 @@ if __name__ == "__main__":
         asyncio.run(price_monitor())
     except KeyboardInterrupt:
         logger.info("ربات متوقف شد.")
-```
