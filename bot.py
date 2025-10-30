@@ -10,7 +10,7 @@ from telegram.error import TelegramError
 # Configuration from environment variables (for Railway)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8299834283:AAED5dLGBUoUZ4GRf0LP-8F8-HqwSJ1rPqA")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@BtcRadars")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))  # seconds
+
 # Using multiple APIs for reliability
 PRICE_APIS = [
     "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
@@ -60,7 +60,6 @@ class BitcoinPriceBot:
     def format_price(self, price):
         """Format price with comma separator and bold text"""
         formatted = f"${price:,.0f}"
-        # Bold formatting for Telegram
         return f"<b>{formatted}</b>"
     
     async def send_price_update(self, price):
@@ -72,21 +71,47 @@ class BitcoinPriceBot:
                 text=message,
                 parse_mode=ParseMode.HTML
             )
-            logger.info(f"✅ Sent price update: ${price:,.0f}")
+            now = datetime.now(timezone.utc)
+            logger.info(f"✅ Sent at {now.strftime('%H:%M:%S')} UTC: ${price:,.0f}")
             return True
         except TelegramError as e:
-            logger.error(f"❌ Telegram error: {e}")
+            logger.error(f"❌ Error: {e}")
             return False
+    
+    async def wait_until_next_30_second_mark(self):
+        """Wait until the next :00 or :30 second mark in UTC"""
+        while True:
+            now = datetime.now(timezone.utc)
+            current_second = now.second
+            current_microsecond = now.microsecond
+            
+            # Calculate seconds to wait until next :00 or :30
+            if current_second < 30:
+                target_second = 30
+            else:
+                target_second = 60
+            
+            wait_seconds = target_second - current_second - (current_microsecond / 1_000_000)
+            
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+                break
+            else:
+                # If we're already past the mark, wait a tiny bit and recalculate
+                await asyncio.sleep(0.1)
     
     async def run(self):
         """Main bot loop"""
         logger.info("🚀 Bitcoin Price Bot started!")
-        logger.info(f"📢 Posting to channel: {CHANNEL_USERNAME}")
-        logger.info(f"⏱️  Update interval: {CHECK_INTERVAL} seconds")
+        logger.info(f"📢 Channel: {CHANNEL_USERNAME}")
+        logger.info(f"⏱️  Posts at :00 and :30 seconds (UTC)")
         
         try:
             while True:
                 try:
+                    # Wait until next :00 or :30 second mark
+                    await self.wait_until_next_30_second_mark()
+                    
                     # Get current price
                     current_price = await self.get_bitcoin_price()
                     
@@ -97,25 +122,22 @@ class BitcoinPriceBot:
                             success = await self.send_price_update(current_price)
                             if success:
                                 self.last_price = current_price
-                                logger.info(f"💰 Price updated: ${current_price:,.0f}")
                         else:
-                            logger.info(f"⏭️  Price unchanged: ${current_price:,.0f} - Skipping")
+                            now = datetime.now(timezone.utc)
+                            logger.info(f"⏭️  {now.strftime('%H:%M:%S')} UTC - Unchanged: ${current_price:,.0f}")
                     else:
-                        logger.warning("⚠️  Could not fetch price, will retry...")
-                    
-                    # Wait before next check
-                    await asyncio.sleep(CHECK_INTERVAL)
+                        logger.warning("⚠️  Could not fetch price")
                     
                 except Exception as e:
-                    logger.error(f"Error in main loop: {e}")
-                    await asyncio.sleep(CHECK_INTERVAL)
+                    logger.error(f"Error: {e}")
+                    await asyncio.sleep(1)
                     
         except KeyboardInterrupt:
-            logger.info("🛑 Bot stopped by user")
+            logger.info("🛑 Stopped")
         finally:
             if self.session:
                 await self.session.close()
-            logger.info("👋 Bot shutdown complete")
+            logger.info("👋 Shutdown complete")
 
 async def main():
     """Entry point"""
