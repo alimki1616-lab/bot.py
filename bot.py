@@ -71,9 +71,10 @@ class BitcoinPriceBot:
         return None
     
     def format_price(self, price: float) -> str:
-        """فرمت کردن قیمت با کاما و bold"""
-        formatted_price = f"${price:,.2f}"
-        return f"<b>{formatted_price}</b>"
+        """فرمت کردن قیمت به صورت خوانا"""
+        price_str = f"{price:,.2f}"
+        price_formatted = price_str.replace(",", " ")
+        return f"<b>💎 Bitcoin Price: ${price_formatted}</b>"
     
     async def send_price_to_channel(self):
         """ارسال قیمت به کانال"""
