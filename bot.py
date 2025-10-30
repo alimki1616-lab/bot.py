@@ -132,4 +132,3 @@ if __name__ == '__main__':
     logger.info("در حال راه‌اندازی Bitcoin Price Bot...")
     bot = BitcoinPriceBot(BOT_TOKEN, CHANNEL_USERNAME)
     asyncio.run(bot.start())
-```
