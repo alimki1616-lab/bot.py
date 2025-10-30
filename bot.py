@@ -11,12 +11,6 @@ from telegram.error import TelegramError
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8299834283:AAED5dLGBUoUZ4GRf0LP-8F8-HqwSJ1rPqA")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@BtcRadars")
 
-# Using multiple APIs for reliability
-PRICE_APIS = [
-    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
-    "https://api.coinbase.com/v2/prices/BTC-USD/spot",
-]
-
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,117 +21,136 @@ logger = logging.getLogger(__name__)
 class BitcoinPriceBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
-        self.last_price = None
+        self.last_sent_price = None
         self.session = None
         
     async def get_bitcoin_price(self):
-        """Fetch current Bitcoin price from multiple APIs"""
+        """Fetch Bitcoin price from Coinbase API (most reliable and fast)"""
         if not self.session:
             self.session = aiohttp.ClientSession()
         
-        # Try CoinGecko first
+        # Coinbase API - fast and reliable
         try:
-            async with self.session.get(PRICE_APIS[0], timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    price = float(data['bitcoin']['usd'])
-                    return round(price, 2)
-        except Exception as e:
-            logger.warning(f"CoinGecko API failed: {e}")
-        
-        # Fallback to Coinbase
-        try:
-            async with self.session.get(PRICE_APIS[1], timeout=10) as response:
+            async with self.session.get(
+                "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+                timeout=8
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
                     price = float(data['data']['amount'])
-                    return round(price, 2)
+                    # Round to integer to avoid decimal differences
+                    return int(round(price))
+                else:
+                    logger.error(f"Coinbase API returned status: {response.status}")
         except Exception as e:
-            logger.error(f"All APIs failed: {e}")
+            logger.error(f"Coinbase API failed: {e}")
+        
+        # Fallback to CoinGecko
+        try:
+            async with self.session.get(
+                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+                timeout=8
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    price = float(data['bitcoin']['usd'])
+                    return int(round(price))
+                else:
+                    logger.error(f"CoinGecko API returned status: {response.status}")
+        except Exception as e:
+            logger.error(f"CoinGecko API failed: {e}")
         
         return None
     
     def format_price(self, price):
         """Format price with comma separator and bold text"""
-        formatted = f"${price:,.0f}"
+        formatted = f"${price:,}"
         return f"<b>{formatted}</b>"
     
     async def send_price_update(self, price):
         """Send price update to channel"""
         try:
+            # Double check: Don't send if same as last sent price
+            if self.last_sent_price == price:
+                logger.warning(f"🚫 Prevented duplicate send: ${price:,}")
+                return False
+            
             message = self.format_price(price)
             await self.bot.send_message(
                 chat_id=CHANNEL_USERNAME,
                 text=message,
                 parse_mode=ParseMode.HTML
             )
+            
+            # Update last sent price
+            self.last_sent_price = price
             now = datetime.now(timezone.utc)
-            logger.info(f"✅ Sent at {now.strftime('%H:%M:%S')} UTC: ${price:,.0f}")
+            logger.info(f"✅ SENT at {now.strftime('%H:%M:%S')} UTC → ${price:,}")
             return True
         except TelegramError as e:
-            logger.error(f"❌ Error: {e}")
+            logger.error(f"❌ Telegram Error: {e}")
             return False
     
-    async def wait_until_next_30_second_mark(self):
-        """Wait until the next :00 or :30 second mark in UTC"""
-        while True:
-            now = datetime.now(timezone.utc)
-            current_second = now.second
-            current_microsecond = now.microsecond
-            
-            # Calculate seconds to wait until next :00 or :30
-            if current_second < 30:
-                target_second = 30
-            else:
-                target_second = 60
-            
-            wait_seconds = target_second - current_second - (current_microsecond / 1_000_000)
-            
-            if wait_seconds > 0:
-                await asyncio.sleep(wait_seconds)
-                break
-            else:
-                # If we're already past the mark, wait a tiny bit and recalculate
-                await asyncio.sleep(0.1)
-    
     async def run(self):
-        """Main bot loop"""
-        logger.info("🚀 Bitcoin Price Bot started!")
+        """Main bot loop - synced with UTC clock"""
+        logger.info("🚀 Bitcoin Price Bot Started!")
         logger.info(f"📢 Channel: {CHANNEL_USERNAME}")
-        logger.info(f"⏱️  Posts at :00 and :30 seconds (UTC)")
+        logger.info(f"⏱️  Posting every 30 seconds at :00 and :30 (UTC)")
+        logger.info(f"🌐 Using Coinbase API (primary) + CoinGecko (backup)")
         
         try:
             while True:
+                # Get current UTC time
+                now = datetime.now(timezone.utc)
+                current_second = now.second
+                current_microsecond = now.microsecond
+                
+                # Calculate seconds until next :00 or :30 mark
+                if current_second < 30:
+                    target = 30
+                    wait = 30 - current_second - (current_microsecond / 1_000_000)
+                else:
+                    target = 60
+                    wait = 60 - current_second - (current_microsecond / 1_000_000)
+                
+                logger.info(f"⏳ Waiting {wait:.1f}s until :{target:02d}...")
+                
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                
+                # Verify timing
+                now_check = datetime.now(timezone.utc)
+                logger.info(f"🕐 Woke at {now_check.strftime('%H:%M:%S')} UTC")
+                
+                # Fetch and send price
                 try:
-                    # Wait until next :00 or :30 second mark
-                    await self.wait_until_next_30_second_mark()
-                    
-                    # Get current price
                     current_price = await self.get_bitcoin_price()
                     
                     if current_price is not None:
-                        # Check if price has changed
-                        if self.last_price is None or current_price != self.last_price:
-                            # Send update
-                            success = await self.send_price_update(current_price)
-                            if success:
-                                self.last_price = current_price
+                        logger.info(f"💰 Fetched: ${current_price:,}")
+                        
+                        # Check if price changed from last SENT price
+                        if self.last_sent_price != current_price:
+                            logger.info(f"📊 Changed: ${self.last_sent_price or 0:,} → ${current_price:,}")
+                            await self.send_price_update(current_price)
                         else:
-                            now = datetime.now(timezone.utc)
-                            logger.info(f"⏭️  {now.strftime('%H:%M:%S')} UTC - Unchanged: ${current_price:,.0f}")
+                            logger.info(f"⏭️  Unchanged: ${current_price:,} - SKIP")
                     else:
-                        logger.warning("⚠️  Could not fetch price")
-                    
+                        logger.warning("⚠️  Failed to fetch price")
+                        
                 except Exception as e:
-                    logger.error(f"Error: {e}")
-                    await asyncio.sleep(1)
+                    logger.error(f"❌ Error: {e}")
+                
+                # Sleep to prevent immediate re-execution
+                await asyncio.sleep(1)
+                logger.info("─" * 50)
                     
         except KeyboardInterrupt:
-            logger.info("🛑 Stopped")
+            logger.info("🛑 Bot Stopped")
         finally:
             if self.session:
                 await self.session.close()
-            logger.info("👋 Shutdown complete")
+            logger.info("👋 Shutdown Complete")
 
 async def main():
     """Entry point"""
