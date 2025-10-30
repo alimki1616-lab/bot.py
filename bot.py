@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import aiohttp
 from telegram import Bot
 from telegram.constants import ParseMode
@@ -24,21 +24,17 @@ class BitcoinPriceBot:
         self.bot = Bot(token=token)
         self.channel = channel
         self.session = None
+        self.last_price = None
         
     async def get_bitcoin_price(self):
         """دریافت قیمت بیت کوین با fallback از چندین API"""
         
-        # لیست APIهای مختلف برای fallback
+        # لیست APIهای مختلف برای fallback - بهترین‌ها اول
         apis = [
             {
-                'name': 'Blockchain.info',
-                'url': 'https://blockchain.info/ticker',
-                'parser': lambda data: data['USD']['last']
-            },
-            {
-                'name': 'CoinDesk',
-                'url': 'https://api.coindesk.com/v1/bpi/currentprice/BTC.json',
-                'parser': lambda data: data['bpi']['USD']['rate_float']
+                'name': 'Binance',
+                'url': 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT',
+                'parser': lambda data: float(data['price'])
             },
             {
                 'name': 'CoinGecko',
@@ -46,9 +42,14 @@ class BitcoinPriceBot:
                 'parser': lambda data: data['bitcoin']['usd']
             },
             {
-                'name': 'Binance',
-                'url': 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT',
-                'parser': lambda data: float(data['price'])
+                'name': 'Kraken',
+                'url': 'https://api.kraken.com/0/public/Ticker?pair=XBTUSD',
+                'parser': lambda data: float(data['result']['XXBTZUSD']['c'][0])
+            },
+            {
+                'name': 'CoinDesk',
+                'url': 'https://api.coindesk.com/v1/bpi/currentprice/BTC.json',
+                'parser': lambda data: data['bpi']['USD']['rate_float']
             }
         ]
         
@@ -70,24 +71,32 @@ class BitcoinPriceBot:
         logger.error("تمام APIها شکست خوردند!")
         return None
     
-    def format_price(self, price: float) -> str:
-        """فرمت کردن قیمت به صورت خوانا"""
-        price_str = f"{price:,.2f}"
-        price_formatted = price_str.replace(",", " ")
-        return f"<b>💎 Bitcoin Price: ${price_formatted}</b>"
+    def format_price(self, price: float, timestamp: str) -> str:
+        """فرمت کردن قیمت با کاما و bold"""
+        formatted_price = f"${price:,.2f}"
+        message = f"<b>{formatted_price}</b>\n\n🕐 {timestamp} UTC"
+        return message
     
     async def send_price_to_channel(self):
-        """ارسال قیمت به کانال"""
+        """ارسال قیمت به کانال فقط در صورت تغییر"""
         try:
             price = await self.get_bitcoin_price()
             if price:
-                message = self.format_price(price)
-                await self.bot.send_message(
-                    chat_id=self.channel,
-                    text=message,
-                    parse_mode=ParseMode.HTML
-                )
-                logger.info(f"قیمت ارسال شد: {price}")
+                # چک کردن تغییر قیمت - فقط اگر تغییر کرده باشد ارسال می‌شود
+                if self.last_price is None or abs(price - self.last_price) >= 0.01:
+                    # گرفتن زمان UTC
+                    utc_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    message = self.format_price(price, utc_time)
+                    await self.bot.send_message(
+                        chat_id=self.channel,
+                        text=message,
+                        parse_mode=ParseMode.HTML
+                    )
+                    logger.info(f"قیمت ارسال شد: {price}")
+                    self.last_price = price
+                else:
+                    logger.info(f"قیمت تغییر نکرده: {price}")
             else:
                 logger.warning("قیمت دریافت نشد")
         except TelegramError as e:
@@ -123,3 +132,4 @@ if __name__ == '__main__':
     logger.info("در حال راه‌اندازی Bitcoin Price Bot...")
     bot = BitcoinPriceBot(BOT_TOKEN, CHANNEL_USERNAME)
     asyncio.run(bot.start())
+```
