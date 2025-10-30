@@ -1,134 +1,126 @@
-import os
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 import aiohttp
 from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
-# تنظیمات لاگ
+# Configuration from environment variables (for Railway)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8299834283:AAED5dLGBUoUZ4GRf0LP-8F8-HqwSJ1rPqA")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@BtcRadars")
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))  # seconds
+# Using multiple APIs for reliability
+PRICE_APIS = [
+    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+    "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+]
+
+# Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# تنظیمات از environment variables
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8299834283:AAED5dLGBUoUZ4GRf0LP-8F8-HqwSJ1rPqA')
-CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@BtcRadars')
-INTERVAL_SECONDS = int(os.getenv('INTERVAL_SECONDS', '30'))
-
 class BitcoinPriceBot:
-    def __init__(self, token: str, channel: str):
-        self.bot = Bot(token=token)
-        self.channel = channel
-        self.session = None
+    def __init__(self):
+        self.bot = Bot(token=BOT_TOKEN)
         self.last_price = None
+        self.session = None
         
     async def get_bitcoin_price(self):
-        """دریافت قیمت بیت کوین با fallback از چندین API"""
+        """Fetch current Bitcoin price from multiple APIs"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
         
-        # لیست APIهای مختلف برای fallback - بهترین‌ها اول
-        apis = [
-            {
-                'name': 'Binance',
-                'url': 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT',
-                'parser': lambda data: float(data['price'])
-            },
-            {
-                'name': 'CoinGecko',
-                'url': 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd',
-                'parser': lambda data: data['bitcoin']['usd']
-            },
-            {
-                'name': 'Kraken',
-                'url': 'https://api.kraken.com/0/public/Ticker?pair=XBTUSD',
-                'parser': lambda data: float(data['result']['XXBTZUSD']['c'][0])
-            },
-            {
-                'name': 'CoinDesk',
-                'url': 'https://api.coindesk.com/v1/bpi/currentprice/BTC.json',
-                'parser': lambda data: data['bpi']['USD']['rate_float']
-            }
-        ]
+        # Try CoinGecko first
+        try:
+            async with self.session.get(PRICE_APIS[0], timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    price = float(data['bitcoin']['usd'])
+                    return round(price, 2)
+        except Exception as e:
+            logger.warning(f"CoinGecko API failed: {e}")
         
-        # تلاش با هر API
-        for api in apis:
-            try:
-                async with self.session.get(api['url'], timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        price = api['parser'](data)
-                        logger.info(f"قیمت از {api['name']} دریافت شد: ${price:,.2f}")
-                        return price
-                    else:
-                        logger.warning(f"{api['name']} - خطا {response.status}")
-            except Exception as e:
-                logger.warning(f"{api['name']} - خطا: {e}")
-                continue
+        # Fallback to Coinbase
+        try:
+            async with self.session.get(PRICE_APIS[1], timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    price = float(data['data']['amount'])
+                    return round(price, 2)
+        except Exception as e:
+            logger.error(f"All APIs failed: {e}")
         
-        logger.error("تمام APIها شکست خوردند!")
         return None
     
-    def format_price(self, price: float, timestamp: str) -> str:
-        """فرمت کردن قیمت با کاما و bold"""
-        formatted_price = f"${price:,.2f}"
-        message = f"<b>{formatted_price}</b>\n\n🕐 {timestamp} UTC"
-        return message
+    def format_price(self, price):
+        """Format price with comma separator and bold text"""
+        formatted = f"${price:,.0f}"
+        # Bold formatting for Telegram
+        return f"<b>{formatted}</b>"
     
-    async def send_price_to_channel(self):
-        """ارسال قیمت به کانال فقط در صورت تغییر"""
+    async def send_price_update(self, price):
+        """Send price update to channel"""
         try:
-            price = await self.get_bitcoin_price()
-            if price:
-                # چک کردن تغییر قیمت - فقط اگر تغییر کرده باشد ارسال می‌شود
-                if self.last_price is None or abs(price - self.last_price) >= 0.01:
-                    # گرفتن زمان UTC
-                    utc_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-                    
-                    message = self.format_price(price, utc_time)
-                    await self.bot.send_message(
-                        chat_id=self.channel,
-                        text=message,
-                        parse_mode=ParseMode.HTML
-                    )
-                    logger.info(f"قیمت ارسال شد: {price}")
-                    self.last_price = price
-                else:
-                    logger.info(f"قیمت تغییر نکرده: {price}")
-            else:
-                logger.warning("قیمت دریافت نشد")
+            message = self.format_price(price)
+            await self.bot.send_message(
+                chat_id=CHANNEL_USERNAME,
+                text=message,
+                parse_mode=ParseMode.HTML
+            )
+            logger.info(f"✅ Sent price update: ${price:,.0f}")
+            return True
         except TelegramError as e:
-            logger.error(f"خطا در ارسال پیام به تلگرام: {e}")
-        except Exception as e:
-            logger.error(f"خطای غیرمنتظره: {e}")
+            logger.error(f"❌ Telegram error: {e}")
+            return False
     
-    async def start(self):
-        """شروع بات و ارسال قیمت هر 30 ثانیه"""
-        logger.info(f"بات شروع به کار کرد. ارسال قیمت به {self.channel} هر {INTERVAL_SECONDS} ثانیه")
-        
-        # ایجاد session برای درخواست‌های HTTP
-        self.session = aiohttp.ClientSession()
+    async def run(self):
+        """Main bot loop"""
+        logger.info("🚀 Bitcoin Price Bot started!")
+        logger.info(f"📢 Posting to channel: {CHANNEL_USERNAME}")
+        logger.info(f"⏱️  Update interval: {CHECK_INTERVAL} seconds")
         
         try:
-            # تست اتصال با ارسال اولین پیام
-            await self.send_price_to_channel()
-            
-            # حلقه اصلی
             while True:
-                await asyncio.sleep(INTERVAL_SECONDS)
-                await self.send_price_to_channel()
-                
+                try:
+                    # Get current price
+                    current_price = await self.get_bitcoin_price()
+                    
+                    if current_price is not None:
+                        # Check if price has changed
+                        if self.last_price is None or current_price != self.last_price:
+                            # Send update
+                            success = await self.send_price_update(current_price)
+                            if success:
+                                self.last_price = current_price
+                                logger.info(f"💰 Price updated: ${current_price:,.0f}")
+                        else:
+                            logger.info(f"⏭️  Price unchanged: ${current_price:,.0f} - Skipping")
+                    else:
+                        logger.warning("⚠️  Could not fetch price, will retry...")
+                    
+                    # Wait before next check
+                    await asyncio.sleep(CHECK_INTERVAL)
+                    
+                except Exception as e:
+                    logger.error(f"Error in main loop: {e}")
+                    await asyncio.sleep(CHECK_INTERVAL)
+                    
         except KeyboardInterrupt:
-            logger.info("بات متوقف شد")
-        except Exception as e:
-            logger.error(f"خطای کلی: {e}")
+            logger.info("🛑 Bot stopped by user")
         finally:
             if self.session:
                 await self.session.close()
+            logger.info("👋 Bot shutdown complete")
 
-if __name__ == '__main__':
-    logger.info("در حال راه‌اندازی Bitcoin Price Bot...")
-    bot = BitcoinPriceBot(BOT_TOKEN, CHANNEL_USERNAME)
-    asyncio.run(bot.start())
+async def main():
+    """Entry point"""
+    bot = BitcoinPriceBot()
+    await bot.run()
+
+if __name__ == "__main__":
+    asyncio.run(main())
