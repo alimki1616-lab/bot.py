@@ -9,7 +9,7 @@ from telegram.error import TelegramError
 
 # Configuration from environment variables (for Railway)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8299834283:AAED5dLGBUoUZ4GRf0LP-8F8-HqwSJ1rPqA")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@BtcPrice3")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@Btc24Price")
 
 # Setup logging
 logging.basicConfig(
